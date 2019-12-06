@@ -97,9 +97,34 @@ class Controller
      */
     function tequila_save_user($tequila_data)
     {
+        global $wpdb;
+
         $this->debug("-> tequila_save_user:\n". var_export($tequila_data, true));
 
-        $user = get_user_by("login", $tequila_data["username"]);
+        /* We start by looking for user using SCIPER as login (because it's the new way to do since version 0.13 */
+        $user = get_user_by("login", $tequila_data["uniqueid"]);
+
+
+        /* ----------------------------------------------------------------------
+            NOTE: maybe, on day, in a far future, this block of code can be removed because it is only here to
+                  ensure backward compatibility with existing user accounts having incorrect name. Once everything
+                  will be renamed to sciper, this code can be removed */
+
+        /* If user is not found using SCIPER as login, */
+        if($user === false)
+        {
+            /* We look for user using its SCIPER in 'nickname' meta field (because was stored here at the beginning) */
+            $users = get_users(array('meta_key' => 'nickname',
+                                     'meta_value' => $tequila_data['uniqueid']));
+
+            /* We extract user info if we have a match */
+            $user = (sizeof($users)==1)?$users[0]:false;
+        }
+
+        /* End of code to remove in the future.
+        --------------------------------------------- */
+
+
         $user_role = $this->settings->get_access_level($tequila_data);
         if (! $user_role) {
             $user_role = "";  // So that wp_update_user() removes the right
@@ -115,11 +140,12 @@ class Controller
             'user_nicename'  => $tequila_data['uniqueid'],  // Their "slug"
             'nickname'       => $tequila_data['uniqueid'],
             'user_email'     => $tequila_data['email'],
-            'user_login'     => $tequila_data['username'],
+            'user_login'     => $tequila_data['uniqueid'], // since version 0.13, we use sciper as login
             'first_name'     => $tequila_data['firstname'],
             'last_name'      => $tequila_data['name'],
             'role'           => $user_role,
             'user_pass'      => null);
+
         $this->debug(var_export($userdata, true));
         if ($user === false) {
             $this->debug("Inserting user");
@@ -131,13 +157,41 @@ class Controller
                 die();
             }
         } else {  // User is already known to WordPress
+
+
+            /* ----------------------------------------------------------------------
+            NOTE: maybe, on day, in a far future, this block of code can be removed because it is only here to
+                  ensure backward compatibility with existing user accounts having incorrect name. Once everything
+                  will be renamed to sciper, this code can be removed */
+
+
+            /* If username is not sciper, we update it */
+            if($user->user_login != $tequila_data['uniqueid'])
+            {
+                $this->debug("Changing username from ".$user->user_login." to ".$tequila_data['uniqueid']);
+                /* We have to rename it in database using WP_Query because it's the only way modify username.
+                WordPress is preventing doing this using regular functions */
+                $sql = "UPDATE ".$wpdb->prefix."users SET user_login='".$tequila_data['uniqueid'].
+                       "' WHERE ID='".$user->ID."'";
+
+                if ( $wpdb->query( $sql ) === false )
+                {
+                    /* We don't throw an exception this time, so website continue to works correctly, only 404 logging fails */
+                    error_log("Accred: Error updating username: ".$wpdb->print_error());
+                }
+            }
+
+            /* End of code to remove in the future.
+            --------------------------------------------- */
+
+
             $this->debug("Updating user");
             $userdata['ID'] = $user->ID;
             $user_id = wp_update_user($userdata);
         }
 
         /* Hide admin bar if necessary */
-        update_user_meta( $user->ID, 'show_admin_bar_front', in_array($user_role, $this::HIDE_ADMINBAR_FOR_ROLES)?'false':'true');
+        update_user_meta( $user->ID, 'show_admin_bar_front', json_encode(in_array($user_role, $this::HIDE_ADMINBAR_FOR_ROLES)));
 
         if (empty(trim($user_role))) {
             // User with no role, but exists in database: die late
